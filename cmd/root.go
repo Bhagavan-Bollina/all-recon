@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -212,23 +213,49 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 	// ── Direct JS URL mode (no crawl) ─────────────────────────────────────────────
 	if len(flagJSURLs) > 0 {
+		total := len(flagJSURLs)
 		if !flagSilent {
-			output.PrintStatus("Scanning %d JS URL(s) directly...", len(flagJSURLs))
+			output.PrintStatus("Scanning %d JS URL(s) with %d workers...", total, flagConcurrency)
 		}
-		var wg sync.WaitGroup
-		sem := make(chan struct{}, flagConcurrency)
 
-		for _, jsURL := range flagJSURLs {
+		jobs := make(chan string, flagConcurrency*2)
+		var wg sync.WaitGroup
+		var done int64
+
+		// Launch fixed worker pool
+		for i := 0; i < flagConcurrency; i++ {
 			wg.Add(1)
-			jsURL := jsURL
-			sem <- struct{}{}
 			go func() {
 				defer wg.Done()
-				defer func() { <-sem }()
-				scanJSURL(ctx, jsURL, httpClient, outWriter, stats, flagSeverity, flagSilent, scanOpts)
+				for jsURL := range jobs {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
+					scanJSURL(ctx, jsURL, httpClient, outWriter, stats, flagSeverity, flagSilent, scanOpts)
+					n := atomic.AddInt64(&done, 1)
+					if !flagSilent && flagVerbose {
+						fmt.Fprintf(os.Stderr, "\r[*] Progress: %d/%d", n, total)
+					}
+				}
 			}()
 		}
+
+		// Feed jobs
+		for _, jsURL := range flagJSURLs {
+			select {
+			case <-ctx.Done():
+				break
+			case jobs <- jsURL:
+			}
+		}
+		close(jobs)
 		wg.Wait()
+
+		if !flagSilent && flagVerbose {
+			fmt.Fprintln(os.Stderr) // newline after progress line
+		}
 	}
 
 	// ── Crawl + scan mode ─────────────────────────────────────────────────────────
