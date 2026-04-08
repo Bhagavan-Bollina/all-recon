@@ -50,7 +50,8 @@ var (
 	flagShowSecrets bool
 
 	// JS-only mode: pass a list of JS URLs directly to scan without crawling
-	flagJSURLs []string
+	flagJSURLs     []string
+	flagJSListFile string
 )
 
 var rootCmd = &cobra.Command{
@@ -94,6 +95,7 @@ func init() {
 	rootCmd.Flags().StringSliceVarP(&flagURLs, "url", "u", nil, "Target URL(s) to crawl")
 	rootCmd.Flags().StringVarP(&flagInputFile, "list", "l", "", "File containing targets (one per line, domains or URLs)")
 	rootCmd.Flags().StringSliceVar(&flagJSURLs, "js", nil, "Scan specific JS URL(s) directly without crawling")
+	rootCmd.Flags().StringVar(&flagJSListFile, "js-list", "", "File containing JS URLs to scan directly (one per line, no crawling)")
 	rootCmd.Flags().Bool("stdin", false, "Read targets from stdin (one per line)")
 
 	// Crawler
@@ -125,8 +127,24 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// ── Collect targets ──────────────────────────────────────────────────────────
 	targets := collectTargets(cmd)
 
+	// Load --js-list file into flagJSURLs
+	if flagJSListFile != "" {
+		f, err := os.Open(flagJSListFile)
+		if err != nil {
+			return fmt.Errorf("cannot open --js-list file: %w", err)
+		}
+		sc := bufio.NewScanner(f)
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			if line != "" && !strings.HasPrefix(line, "#") {
+				flagJSURLs = append(flagJSURLs, line)
+			}
+		}
+		f.Close()
+	}
+
 	if len(targets) == 0 && len(flagJSURLs) == 0 {
-		return fmt.Errorf("no targets provided — use -d, -u, -l, --js, or --stdin")
+		return fmt.Errorf("no targets provided — use -d, -u, -l, --js, --js-list, or --stdin")
 	}
 
 	// ── Setup output writer ───────────────────────────────────────────────────────
